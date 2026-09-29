@@ -2,7 +2,8 @@ name: Daily News Bot
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Run every day at 6:34 AM IST (UTC+5:30)
+    - cron: '0 0-21/0.5 * * *'
+    # run every day UTC+3 (Moscow time) from 3 AM til 12 PM every 30 min
   workflow_dispatch:
 
 jobs:
