@@ -1,61 +1,174 @@
 import os
-import time
+from datetime import datetime, timedelta, timezone
+
 import requests
 import telepot
-from telepot.loop import MessageLoop
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Importing API and Tokens from dotenv file.
-TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-NEWS_API_KEY = os.getenv('NEWS_API_KEY')
-TARGET_CHAT_ID = os.getenv('TARGET_CHAT_ID')
 
 
-def fetch_technology_news(api_key, country='in', category='technology', num_articles=5):
-    base_url = 'https://newsapi.org/v2/top-headlines'
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
+
+MAX_ARTICLES = 5
+
+SEARCH_QUERY = (
+    '"research opportunity" OR '
+    '"research internship" OR '
+    '"research fellowship" OR '
+    '"fellowship opportunity" OR '
+    '"internship opportunity" OR '
+    '"summer internship" OR '
+    '"undergraduate research" OR '
+    '"graduate fellowship"'
+)
+
+RELEVANCE_KEYWORDS = [
+    "internship",
+    "intern",
+    "fellowship",
+    "fellow",
+    "research opportunity",
+    "research program",
+    "undergraduate research",
+    "graduate research",
+    "students",
+    "apply",
+    "application",
+    "applications",
+    "deadline",
+]
+
+
+def validate_config():
+    missing = []
+
+    if not TELEGRAM_BOT_TOKEN:
+        missing.append("TELEGRAM_BOT_TOKEN")
+
+    if not NEWS_API_KEY:
+        missing.append("NEWS_API_KEY")
+
+    if not TARGET_CHAT_ID:
+        missing.append("TARGET_CHAT_ID")
+
+    if missing:
+        raise RuntimeError(
+            "Missing required environment variables: "
+            + ", ".join(missing)
+        )
+
+
+def is_relevant(article):
+    text = " ".join(
+        [
+            article.get("title") or "",
+            article.get("description") or "",
+            article.get("content") or "",
+        ]
+    ).lower()
+
+    return any(keyword in text for keyword in RELEVANCE_KEYWORDS)
+
+
+def fetch_articles():
+    from_date = (
+        datetime.now(timezone.utc) - timedelta(days=7)
+    ).strftime("%Y-%m-%d")
+
     params = {
-        'country': country,
-        'category': category,
-        'apiKey': api_key,
-        'pageSize': num_articles
+        "q": SEARCH_QUERY,
+        "searchIn": "title,description",
+        "language": "en",
+        "from": from_date,
+        "sortBy": "publishedAt",
+        "pageSize": 50,
     }
 
-    try:
-        response = requests.get(base_url, params=params)
-        response.raise_for_status()
-        data = response.json()
+    headers = {
+        "X-Api-Key": NEWS_API_KEY
+    }
 
-        if data['status'] == 'ok':
-            articles = data['articles']
-            return articles
-        else:
-            print(f"Error: {data['message']}")
-            return []
+    response = requests.get(
+        "https://newsapi.org/v2/everything",
+        params=params,
+        headers=headers,
+        timeout=20,
+    )
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error: {e}")
-        return []
+    response.raise_for_status()
 
-def send_news_on_start(api_key, chat_id):
-    articles = fetch_technology_news(api_key)
+    data = response.json()
 
-    if articles:
-        for idx, article in enumerate(articles, start=1):
-            title = article['title']
-            url = article['url']
-            news_message = f"{idx}. {title}\n   {url}\n"
-            bot.sendMessage(chat_id, news_message)
-    else:
-        bot.sendMessage(chat_id, "Error fetching news. Please try again later.")
+    if data.get("status") != "ok":
+        raise RuntimeError(
+            f"NewsAPI error: {data.get('message', 'Unknown error')}"
+        )
+
+    results = []
+    seen_urls = set()
+
+    for article in data.get("articles", []):
+        url = article.get("url")
+
+        if not url or url in seen_urls:
+            continue
+
+        if not is_relevant(article):
+            continue
+
+        seen_urls.add(url)
+        results.append(article)
+
+        if len(results) >= MAX_ARTICLES:
+            break
+
+    return results
 
 
+def format_article(article, number):
+    title = article.get("title") or "Untitled opportunity"
+    description = article.get("description") or ""
+    url = article.get("url") or ""
 
-# Create the bot with the provided token
-bot = telepot.Bot(TOKEN)
+    if len(description) > 350:
+        description = description[:347] + "..."
 
-# Send news when the bot starts
-send_news_on_start(NEWS_API_KEY, TARGET_CHAT_ID)
+    text = f"🎓 {number}. {title}\n"
+
+    if description:
+        text += f"\n{description}\n"
+
+    text += f"\n🔗 {url}"
+
+    return text
 
 
+def main():
+    validate_config()
+
+    bot = telepot.Bot(TELEGRAM_BOT_TOKEN)
+    articles = fetch_articles()
+
+    if not articles:
+        bot.sendMessage(
+            TARGET_CHAT_ID,
+            "🔎 No new research, fellowship, or internship opportunities found today.",
+        )
+        return
+
+    bot.sendMessage(
+        TARGET_CHAT_ID,
+        f"🎓 Daily Opportunity Digest\n\n"
+        f"{len(articles)} research, fellowship, or internship opportunities found.",
+    )
+
+    for i, article in enumerate(articles, start=1):
+        bot.sendMessage(
+            TARGET_CHAT_ID,
+            format_article(article, i),
+            disable_web_page_preview=True,
+        )
+
+
+if __name__ == "__main__":
+    main()
